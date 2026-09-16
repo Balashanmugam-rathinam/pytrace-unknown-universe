@@ -1,42 +1,17 @@
 import os
 import time
 
-from scapy.layers.inet import IP, ICMP
+from scapy.layers.inet import IP, ICMP, UDP
 from scapy.packet import Raw
 from scapy.sendrecv import sr1
 
 
-# Use a stable identifier for this PyTrace process.
 ICMP_ID = os.getpid() & 0xFFFF
+UDP_BASE_PORT = 33434
 
 
-def send_icmp_probe(
-    destination: str,
-    ttl: int,
-    timeout: float
-):
-    """
-    Send one ICMP Echo Request with a specific TTL.
-
-    Returns:
-        (reply, rtt_ms)
-    """
-
-    packet = (
-        IP(
-            dst=destination,
-            ttl=ttl
-        )
-        /
-        ICMP(
-            id=ICMP_ID,
-            seq=ttl
-        )
-        /
-        Raw(
-            load=b"PyTrace-Unknown-Universe"
-        )
-    )
+def _send_packet(packet, timeout):
+    """Send a packet and return the response with RTT."""
 
     start = time.perf_counter()
 
@@ -61,24 +36,143 @@ def send_icmp_probe(
     if reply is None:
         return None, None
 
+    return reply, elapsed
+
+
+def send_icmp_probe(
+    destination: str,
+    ttl: int,
+    timeout: float
+):
+    """Send an ICMP Echo Request with a specific TTL."""
+
+    packet = (
+        IP(
+            dst=destination,
+            ttl=ttl
+        )
+        /
+        ICMP(
+            id=ICMP_ID,
+            seq=ttl
+        )
+        /
+        Raw(
+            load=b"PyTrace-Unknown-Universe"
+        )
+    )
+
+    reply, elapsed = _send_packet(
+        packet,
+        timeout
+    )
+
+    if reply is None:
+        return None, None, "NO_RESPONSE"
+
     if not reply.haslayer(ICMP):
-        return None, None
+        return None, None, "NO_RESPONSE"
 
     icmp = reply.getlayer(ICMP)
 
     if icmp is None:
-        return None, None
+        return None, None, "NO_RESPONSE"
 
-    # ICMP Time Exceeded
     if icmp.type == 11:
-        return reply, elapsed
+        return reply, elapsed, "ICMP_TIME_EXCEEDED"
 
-    # ICMP Echo Reply
     if icmp.type == 0:
-        return reply, elapsed
+        return reply, elapsed, "ICMP_ECHO_REPLY"
 
-    # ICMP Destination Unreachable
     if icmp.type == 3:
-        return reply, elapsed
+        return reply, elapsed, "ICMP_DESTINATION_UNREACHABLE"
 
-    return None, None
+    return reply, elapsed, f"ICMP_TYPE_{icmp.type}"
+
+
+def send_udp_probe(
+    destination: str,
+    ttl: int,
+    timeout: float
+):
+    """
+    Send a UDP traceroute probe.
+
+    UDP destination ports start at 33434 and increase
+    with each TTL.
+    """
+
+    destination_port = UDP_BASE_PORT + ttl
+
+    packet = (
+        IP(
+            dst=destination,
+            ttl=ttl
+        )
+        /
+        UDP(
+            dport=destination_port
+        )
+        /
+        Raw(
+            load=b"PyTrace-Unknown-Universe"
+        )
+    )
+
+    reply, elapsed = _send_packet(
+        packet,
+        timeout
+    )
+
+    if reply is None:
+        return None, None, "NO_RESPONSE"
+
+    if not reply.haslayer(ICMP):
+        return None, None, "NO_RESPONSE"
+
+    icmp = reply.getlayer(ICMP)
+
+    if icmp is None:
+        return None, None, "NO_RESPONSE"
+
+    # Router exceeded TTL
+    if icmp.type == 11:
+        return reply, elapsed, "UDP_TIME_EXCEEDED"
+
+    # Destination received UDP packet on a closed port.
+    if icmp.type == 3:
+        return reply, elapsed, "UDP_DESTINATION"
+
+    return reply, elapsed, f"ICMP_TYPE_{icmp.type}"
+
+
+def send_probe(
+    destination: str,
+    ttl: int,
+    timeout: float
+):
+    """
+    Try ICMP first.
+
+    If ICMP produces no response, try UDP.
+
+    Returns:
+        (reply, rtt_ms, protocol)
+    """
+
+    reply, rtt, response = send_icmp_probe(
+        destination,
+        ttl,
+        timeout
+    )
+
+    if reply is not None:
+        return reply, rtt, response
+
+    reply, rtt, response = send_udp_probe(
+        destination,
+        ttl,
+        timeout
+    )
+
+    return reply, rtt, response
