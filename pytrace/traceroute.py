@@ -1,14 +1,15 @@
 import socket
+import statistics
 
 from .banner import BANNER
-from .probes import send_probe
+from .probes import probe_hop
 
 
-PROBES_PER_HOP = 3
+PROBES_PER_HOP = 1
 
 
 def resolve_target(target: str) -> str:
-    """Resolve the target hostname to an IPv4 address."""
+    """Resolve target hostname to IPv4 address."""
 
     try:
         return socket.gethostbyname(target)
@@ -20,33 +21,17 @@ def resolve_target(target: str) -> str:
 
 
 def reverse_dns(ip_address: str) -> str:
-    """Resolve an IP address to its hostname."""
+    """Perform reverse DNS lookup."""
 
     try:
         return socket.gethostbyaddr(ip_address)[0]
 
-    except (socket.herror, socket.gaierror):
+    except (
+        socket.herror,
+        socket.gaierror,
+        OSError
+    ):
         return "-"
-
-
-def get_response_type(reply) -> str:
-    """Identify the ICMP response type."""
-
-    if not reply.haslayer("ICMP"):
-        return "UNKNOWN"
-
-    icmp = reply.getlayer("ICMP")
-
-    if icmp.type == 0:
-        return "ECHO_REPLY"
-
-    if icmp.type == 3:
-        return "DESTINATION_UNREACHABLE"
-
-    if icmp.type == 11:
-        return "TIME_EXCEEDED"
-
-    return f"ICMP_TYPE_{icmp.type}"
 
 
 def trace(
@@ -54,7 +39,7 @@ def trace(
     max_hops: int = 30,
     timeout: float = 2.0
 ) -> None:
-    """Discover the observable network path to an IPv4 target."""
+    """Perform multi-protocol network path discovery."""
 
     destination = resolve_target(target)
 
@@ -65,7 +50,7 @@ def trace(
     print(f"Destination: {destination}")
     print(f"Max hops   : {max_hops}")
     print(f"Timeout    : {timeout}s")
-    print(f"Probes/hop : {PROBES_PER_HOP}")
+    print("Protocols  : ICMP + UDP + TCP")
     print("=" * 125)
     print()
 
@@ -73,7 +58,8 @@ def trace(
         f"{'HOP':<5}"
         f"{'IP ADDRESS':<20}"
         f"{'HOSTNAME':<42}"
-        f"{'RTT':<32}"
+        f"{'PROTOCOL':<12}"
+        f"{'RTT':<22}"
         f"RESPONSE"
     )
 
@@ -81,154 +67,142 @@ def trace(
 
     for ttl in range(1, max_hops + 1):
 
-        responses = []
+        all_responses = []
 
-        # ----------------------------------------
-        # Send multiple probes for this TTL
-        # ----------------------------------------
+        # ----------------------------------------------------
+        # Multiple measurements for this TTL
+        # ----------------------------------------------------
 
         for _ in range(PROBES_PER_HOP):
 
             try:
-                reply, rtt, response = send_probe(
+
+                responses = probe_hop(
                     destination,
                     ttl,
                     timeout
                 )
 
+                all_responses.extend(responses)
+
             except PermissionError as exc:
-                print(f"\nError: {exc}")
+
+                print()
+                print(f"ERROR: {exc}")
                 return
 
-            if reply is None:
-                responses.append(
-                    {
-                        "ip": None,
-                        "hostname": "-",
-                        "rtt": None,
-                        "response": "NO_RESPONSE"
-                    }
-                )
+            except OSError as exc:
 
-                continue
+                print()
+                print(f"ERROR: {exc}")
+                return
 
-            hop_ip = reply.src
-            hostname = reverse_dns(hop_ip)
+        # ----------------------------------------------------
+        # No response
+        # ----------------------------------------------------
 
-            response_type = get_response_type(reply)
-
-            responses.append(
-                {
-                    "ip": hop_ip,
-                    "hostname": hostname,
-                    "rtt": rtt,
-                    "response": response_type
-                }
-            )
-
-        # ----------------------------------------
-        # Remove probes that received no response
-        # ----------------------------------------
-
-        valid_responses = [
-            item
-            for item in responses
-            if item["ip"] is not None
-        ]
-
-        # ----------------------------------------
-        # No router response
-        # ----------------------------------------
-
-        if not valid_responses:
+        if not all_responses:
 
             print(
                 f"{ttl:<5}"
                 f"{'*':<20}"
                 f"{'-':<42}"
-                f"{'timeout':<32}"
+                f"{'-':<12}"
+                f"{'timeout':<22}"
                 f"NO_RESPONSE"
             )
 
             continue
 
-        # ----------------------------------------
-        # Group responses by IP address
-        # ----------------------------------------
+        # ----------------------------------------------------
+        # Group responses by IP
+        # ----------------------------------------------------
 
         routers = {}
 
-        for item in valid_responses:
+        for response in all_responses:
 
-            ip = item["ip"]
+            ip = response["ip"]
 
             if ip not in routers:
 
                 routers[ip] = {
-                    "hostname": item["hostname"],
                     "rtts": [],
+                    "protocols": [],
                     "responses": []
                 }
 
             routers[ip]["rtts"].append(
-                item["rtt"]
+                response["rtt"]
             )
+
+            if response["protocol"] not in routers[ip]["protocols"]:
+
+                routers[ip]["protocols"].append(
+                    response["protocol"]
+                )
 
             routers[ip]["responses"].append(
-                item["response"]
+                response["type"]
             )
 
+        # ----------------------------------------------------
+        # Display discovered devices
+        # ----------------------------------------------------
+
         destination_reached = False
-
-        first_router = True
-
-        # ----------------------------------------
-        # Display discovered routers
-        # ----------------------------------------
+        first = True
 
         for ip, data in routers.items():
 
-            hostname = data["hostname"]
+            hostname = reverse_dns(ip)
 
-            rtt_text = "  ".join(
-                f"{rtt:.3f} ms"
-                for rtt in data["rtts"]
+            rtts = data["rtts"]
+
+            minimum = min(rtts)
+            average = statistics.mean(rtts)
+            maximum = max(rtts)
+
+            protocol_text = ",".join(
+                data["protocols"]
             )
 
-            response_text = ", ".join(
+            response_text = ",".join(
                 data["responses"]
             )
 
-            hop_number = (
-                str(ttl)
-                if first_router
-                else ""
+            rtt_text = (
+                f"{minimum:.2f}/"
+                f"{average:.2f}/"
+                f"{maximum:.2f} ms"
             )
 
+            hop_text = str(ttl) if first else ""
+
             print(
-                f"{hop_number:<5}"
+                f"{hop_text:<5}"
                 f"{ip:<20}"
                 f"{hostname:<42}"
-                f"{rtt_text:<32}"
+                f"{protocol_text:<12}"
+                f"{rtt_text:<22}"
                 f"{response_text}"
             )
 
-            first_router = False
-
-            # ------------------------------------
-            # Check destination
-            # ------------------------------------
+            first = False
 
             if ip == destination:
                 destination_reached = True
 
         print()
 
+        # ----------------------------------------------------
+        # Destination reached
+        # ----------------------------------------------------
+
         if destination_reached:
 
             print("-" * 125)
             print("Destination reached.")
-
             return
 
     print("-" * 125)
