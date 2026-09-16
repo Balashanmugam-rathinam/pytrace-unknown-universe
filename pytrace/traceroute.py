@@ -26,6 +26,33 @@ def reverse_dns(ip_address: str) -> str:
         return "-"
 
 
+def get_icmp_response_type(reply) -> str:
+    """
+    Identify the ICMP response type.
+
+    ICMP:
+        0  = Echo Reply
+        3  = Destination Unreachable
+        11 = Time Exceeded
+    """
+
+    if not reply.haslayer("ICMP"):
+        return "UNKNOWN"
+
+    icmp = reply.getlayer("ICMP")
+
+    if icmp.type == 0:
+        return "DESTINATION"
+
+    if icmp.type == 3:
+        return "UNREACHABLE"
+
+    if icmp.type == 11:
+        return "TIME_EXCEEDED"
+
+    return f"ICMP_TYPE_{icmp.type}"
+
+
 def trace(
     target: str,
     max_hops: int = 30,
@@ -35,7 +62,6 @@ def trace(
 
     destination = resolve_target(target)
 
-    # Display banner
     print(BANNER)
 
     print("=" * 70)
@@ -51,10 +77,11 @@ def trace(
         f"{'HOP':<6}"
         f"{'IP ADDRESS':<20}"
         f"{'RTT':<12}"
-        f"HOSTNAME"
+        f"{'HOSTNAME':<30}"
+        f"RESPONSE"
     )
 
-    print("-" * 70)
+    print("-" * 90)
 
     for ttl in range(1, max_hops + 1):
 
@@ -76,30 +103,32 @@ def trace(
                 f"{ttl:<6}"
                 f"{'*':<20}"
                 f"{'timeout':<12}"
-                f"-"
+                f"{'-':<30}"
+                f"NO_RESPONSE"
             )
 
             continue
 
-        # Responding device
         hop_ip = reply.src
         hostname = reverse_dns(hop_ip)
+        response_type = get_icmp_response_type(reply)
 
         print(
             f"{ttl:<6}"
             f"{hop_ip:<20}"
             f"{rtt:.2f} ms"
             f"{'':<5}"
-            f"{hostname}"
+            f"{hostname:<30}"
+            f"{response_type}"
         )
 
         # Destination reached
         if hop_ip == destination:
 
-            print("-" * 70)
+            print("-" * 90)
             print("Destination reached.")
 
             return
 
-    print("-" * 70)
+    print("-" * 90)
     print("Maximum hop limit reached.")
