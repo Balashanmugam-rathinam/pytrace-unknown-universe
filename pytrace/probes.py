@@ -1,13 +1,14 @@
 import os
 import time
 
-from scapy.layers.inet import IP, ICMP, UDP
+from scapy.layers.inet import IP, ICMP, UDP, TCP
 from scapy.packet import Raw
 from scapy.sendrecv import sr1
 
 
 ICMP_ID = os.getpid() & 0xFFFF
 UDP_BASE_PORT = 33434
+TCP_BASE_PORT = 40000
 
 
 def _send_packet(packet, timeout):
@@ -75,9 +76,6 @@ def send_icmp_probe(
 
     icmp = reply.getlayer(ICMP)
 
-    if icmp is None:
-        return None, None, "NO_RESPONSE"
-
     if icmp.type == 11:
         return reply, elapsed, "ICMP_TIME_EXCEEDED"
 
@@ -95,12 +93,7 @@ def send_udp_probe(
     ttl: int,
     timeout: float
 ):
-    """
-    Send a UDP traceroute probe.
-
-    UDP destination ports start at 33434 and increase
-    with each TTL.
-    """
+    """Send a UDP traceroute probe."""
 
     destination_port = UDP_BASE_PORT + ttl
 
@@ -132,18 +125,74 @@ def send_udp_probe(
 
     icmp = reply.getlayer(ICMP)
 
-    if icmp is None:
-        return None, None, "NO_RESPONSE"
-
-    # Router exceeded TTL
     if icmp.type == 11:
         return reply, elapsed, "UDP_TIME_EXCEEDED"
 
-    # Destination received UDP packet on a closed port.
     if icmp.type == 3:
-        return reply, elapsed, "UDP_DESTINATION"
+        return reply, elapsed, "UDP_DESTINATION_UNREACHABLE"
 
     return reply, elapsed, f"ICMP_TYPE_{icmp.type}"
+
+
+def send_tcp_probe(
+    destination: str,
+    ttl: int,
+    timeout: float
+):
+    """
+    Send a TCP SYN probe with a specific TTL.
+
+    TCP can sometimes reveal hops that do not respond
+    to ICMP or UDP probes.
+    """
+
+    destination_port = TCP_BASE_PORT + ttl
+
+    packet = (
+        IP(
+            dst=destination,
+            ttl=ttl
+        )
+        /
+        TCP(
+            dport=destination_port,
+            flags="S"
+        )
+    )
+
+    reply, elapsed = _send_packet(
+        packet,
+        timeout
+    )
+
+    if reply is None:
+        return None, None, "NO_RESPONSE"
+
+    # Intermediate router reporting TTL expiration
+    if reply.haslayer(ICMP):
+
+        icmp = reply.getlayer(ICMP)
+
+        if icmp.type == 11:
+            return reply, elapsed, "TCP_TIME_EXCEEDED"
+
+        if icmp.type == 3:
+            return reply, elapsed, "TCP_DESTINATION_UNREACHABLE"
+
+    # Destination replied with TCP
+    if reply.haslayer(TCP):
+
+        tcp = reply.getlayer(TCP)
+
+        if tcp.flags & 0x12:
+            return reply, elapsed, "TCP_SYN_ACK"
+
+        if tcp.flags & 0x04:
+            return reply, elapsed, "TCP_RST"
+
+        return reply, elapsed, "TCP_RESPONSE"
+
+    return reply, elapsed, "TCP_UNKNOWN"
 
 
 def send_probe(
@@ -152,13 +201,15 @@ def send_probe(
     timeout: float
 ):
     """
-    Try ICMP first.
-
-    If ICMP produces no response, try UDP.
+    Try ICMP first, then UDP, then TCP.
 
     Returns:
-        (reply, rtt_ms, protocol)
+        (reply, rtt_ms, response)
     """
+
+    # ----------------------------------------
+    # 1. ICMP
+    # ----------------------------------------
 
     reply, rtt, response = send_icmp_probe(
         destination,
@@ -169,10 +220,34 @@ def send_probe(
     if reply is not None:
         return reply, rtt, response
 
+    # ----------------------------------------
+    # 2. UDP
+    # ----------------------------------------
+
     reply, rtt, response = send_udp_probe(
         destination,
         ttl,
         timeout
     )
 
-    return reply, rtt, response
+    if reply is not None:
+        return reply, rtt, response
+
+    # ----------------------------------------
+    # 3. TCP
+    # ----------------------------------------
+
+    reply, rtt, response = send_tcp_probe(
+        destination,
+        ttl,
+        timeout
+    )
+
+    if reply is not None:
+        return reply, rtt, response
+
+    # ----------------------------------------
+    # Nothing responded
+    # ----------------------------------------
+
+    return None, None, "NO_RESPONSE"

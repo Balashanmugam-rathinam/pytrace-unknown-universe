@@ -8,7 +8,7 @@ PROBES_PER_HOP = 3
 
 
 def resolve_target(target: str) -> str:
-    """Resolve hostname to an IPv4 address."""
+    """Resolve the target hostname to an IPv4 address."""
 
     try:
         return socket.gethostbyname(target)
@@ -20,7 +20,7 @@ def resolve_target(target: str) -> str:
 
 
 def reverse_dns(ip_address: str) -> str:
-    """Perform reverse DNS lookup."""
+    """Resolve an IP address to its hostname."""
 
     try:
         return socket.gethostbyaddr(ip_address)[0]
@@ -54,7 +54,7 @@ def trace(
     max_hops: int = 30,
     timeout: float = 2.0
 ) -> None:
-    """Trace the IPv4 network path to a target."""
+    """Discover the observable network path to an IPv4 target."""
 
     destination = resolve_target(target)
 
@@ -67,7 +67,6 @@ def trace(
     print(f"Timeout    : {timeout}s")
     print(f"Probes/hop : {PROBES_PER_HOP}")
     print("=" * 125)
-
     print()
 
     print(
@@ -84,7 +83,10 @@ def trace(
 
         responses = []
 
-        # Send 3 probes for this TTL
+        # ----------------------------------------
+        # Send multiple probes for this TTL
+        # ----------------------------------------
+
         for _ in range(PROBES_PER_HOP):
 
             try:
@@ -102,7 +104,7 @@ def trace(
                 responses.append(
                     {
                         "ip": None,
-                        "hostname": None,
+                        "hostname": "-",
                         "rtt": None,
                         "response": "NO_RESPONSE"
                     }
@@ -112,6 +114,7 @@ def trace(
 
             hop_ip = reply.src
             hostname = reverse_dns(hop_ip)
+
             response_type = get_response_type(reply)
 
             responses.append(
@@ -119,19 +122,25 @@ def trace(
                     "ip": hop_ip,
                     "hostname": hostname,
                     "rtt": rtt,
-                    "response": response
+                    "response": response_type
                 }
             )
 
-        # Keep only successful responses
-        valid = [
-            result
-            for result in responses
-            if result["ip"] is not None
+        # ----------------------------------------
+        # Remove probes that received no response
+        # ----------------------------------------
+
+        valid_responses = [
+            item
+            for item in responses
+            if item["ip"] is not None
         ]
 
-        # No response from this TTL
-        if not valid:
+        # ----------------------------------------
+        # No router response
+        # ----------------------------------------
+
+        if not valid_responses:
 
             print(
                 f"{ttl:<5}"
@@ -143,32 +152,39 @@ def trace(
 
             continue
 
-        # Group responses by router IP
+        # ----------------------------------------
+        # Group responses by IP address
+        # ----------------------------------------
+
         routers = {}
 
-        for result in valid:
+        for item in valid_responses:
 
-            ip = result["ip"]
+            ip = item["ip"]
 
             if ip not in routers:
 
                 routers[ip] = {
-                    "hostname": result["hostname"],
+                    "hostname": item["hostname"],
                     "rtts": [],
                     "responses": []
                 }
 
             routers[ip]["rtts"].append(
-                result["rtt"]
+                item["rtt"]
             )
 
             routers[ip]["responses"].append(
-                result["response"]
+                item["response"]
             )
 
         destination_reached = False
 
         first_router = True
+
+        # ----------------------------------------
+        # Display discovered routers
+        # ----------------------------------------
 
         for ip, data in routers.items():
 
@@ -183,7 +199,11 @@ def trace(
                 data["responses"]
             )
 
-            hop_number = str(ttl) if first_router else ""
+            hop_number = (
+                str(ttl)
+                if first_router
+                else ""
+            )
 
             print(
                 f"{hop_number:<5}"
@@ -194,6 +214,10 @@ def trace(
             )
 
             first_router = False
+
+            # ------------------------------------
+            # Check destination
+            # ------------------------------------
 
             if ip == destination:
                 destination_reached = True
