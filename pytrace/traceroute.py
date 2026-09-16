@@ -27,14 +27,7 @@ def reverse_dns(ip_address: str) -> str:
 
 
 def get_icmp_response_type(reply) -> str:
-    """
-    Identify the ICMP response type.
-
-    ICMP:
-        0  = Echo Reply
-        3  = Destination Unreachable
-        11 = Time Exceeded
-    """
+    """Identify the ICMP response type."""
 
     if not reply.haslayer("ICMP"):
         return "UNKNOWN"
@@ -96,7 +89,6 @@ def trace(
             print(f"\nError: {exc}")
             return
 
-        # No response
         if reply is None:
 
             print(
@@ -122,7 +114,6 @@ def trace(
             f"{response_type}"
         )
 
-        # Destination reached
         if hop_ip == destination:
 
             print("-" * 90)
