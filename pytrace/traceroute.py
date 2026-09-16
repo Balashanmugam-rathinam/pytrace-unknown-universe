@@ -4,6 +4,9 @@ from .banner import BANNER
 from .probes import send_probe
 
 
+PROBES_PER_HOP = 3
+
+
 def resolve_target(target: str) -> str:
     """Resolve hostname to an IPv4 address."""
 
@@ -57,87 +60,136 @@ def trace(
 
     print(BANNER)
 
-    print("=" * 90)
+    print("=" * 115)
     print(f"Target     : {target}")
     print(f"Destination: {destination}")
     print(f"Max hops   : {max_hops}")
     print(f"Timeout    : {timeout}s")
-    print("=" * 90)
+    print(f"Probes/hop : {PROBES_PER_HOP}")
+    print("=" * 115)
 
     print()
 
     print(
         f"{'HOP':<5}"
         f"{'IP ADDRESS':<20}"
-        f"{'HOSTNAME':<40}"
-        f"{'RTT':<12}"
+        f"{'HOSTNAME':<42}"
+        f"{'RTT':<15}"
         f"RESPONSE"
     )
 
-    print("-" * 105)
+    print("-" * 115)
 
     for ttl in range(1, max_hops + 1):
 
-        try:
-            reply, rtt, response = send_probe(
-                destination,
-                ttl,
-                timeout
+        responses = []
+
+        for _ in range(PROBES_PER_HOP):
+
+            try:
+                reply, rtt, response = send_probe(
+                    destination,
+                    ttl,
+                    timeout
+                )
+
+            except PermissionError as exc:
+                print(f"\nError: {exc}")
+                return
+
+            if reply is None:
+                responses.append(
+                    (None, None, "NO_RESPONSE")
+                )
+                continue
+
+            hop_ip = reply.src
+            hostname = reverse_dns(hop_ip)
+
+            responses.append(
+                (
+                    hop_ip,
+                    hostname,
+                    rtt,
+                    response
+                )
             )
 
-        except PermissionError as exc:
-            print(f"\nError: {exc}")
-            return
+        valid_responses = [
+            result
+            for result in responses
+            if result[0] is not None
+        ]
 
-        # No response from either ICMP or UDP.
-        if reply is None:
+        if not valid_responses:
 
             print(
                 f"{ttl:<5}"
                 f"{'*':<20}"
-                f"{'-':<40}"
-                f"{'timeout':<12}"
+                f"{'-':<42}"
+                f"{'timeout':<15}"
                 f"NO_RESPONSE"
             )
 
             continue
 
-        hop_ip = reply.src
-        hostname = reverse_dns(hop_ip)
+        # Group responses by IP.
+        hop_ips = {}
 
-        response_type = get_response_type(reply)
+        for hop_ip, hostname, rtt, response in valid_responses:
 
-        print(
-            f"{ttl:<5}"
-            f"{hop_ip:<20}"
-            f"{hostname:<40}"
-            f"{rtt:.3f} ms"
-            f"{'':<4}"
-            f"{response}"
-        )
+            if hop_ip not in hop_ips:
+                hop_ips[hop_ip] = {
+                    "hostname": hostname,
+                    "rtts": [],
+                    "responses": []
+                }
 
-        # Destination reached through ICMP Echo Reply.
-        if (
-            hop_ip == destination
-            and response_type == "ECHO_REPLY"
-        ):
+            hop_ips[hop_ip]["rtts"].append(rtt)
+            hop_ips[hop_ip]["responses"].append(response)
 
-            print("-" * 105)
+        first_ip = True
+
+        destination_reached = False
+
+        for hop_ip, data in hop_ips.items():
+
+            hostname = data["hostname"]
+
+            rtt_text = "  ".join(
+                f"{rtt:.3f} ms"
+                for rtt in data["rtts"]
+            )
+
+            response_text = ", ".join(
+                data["responses"]
+            )
+
+            if first_ip:
+                hop_text = str(ttl)
+                first_ip = False
+            else:
+                hop_text = ""
+
+            print(
+                f"{hop_text:<5}"
+                f"{hop_ip:<20}"
+                f"{hostname:<42}"
+                f"{rtt_text:<15}"
+                f"{response_text}"
+            )
+
+            if hop_ip == destination:
+                destination_reached = True
+
+        print()
+
+        if destination_reached:
+
+            print("-" * 115)
             print("Destination reached.")
 
             return
 
-        # Destination can also respond to UDP with
-        # ICMP Destination Unreachable / Port Unreachable.
-        if (
-            hop_ip == destination
-            and response_type == "DESTINATION_UNREACHABLE"
-        ):
-
-            print("-" * 105)
-            print("Destination reached.")
-
-            return
-
-    print("-" * 105)
+    print("-" * 115)
     print("Maximum hop limit reached.")
