@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pytrace-unknown-universe"
+version = "0.2.0"
+description = "A Python-based network path discovery utility"
+requires-python = ">=3.9"
+dependencies = [
+    "scapy==2.7.0"
+]
+
+[project.scripts]
+pytrace = "pytrace.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["pytrace*"]
