@@ -1,12 +1,22 @@
+import os
 import time
 
 from scapy.layers.inet import IP, ICMP
-from scapy.sendrecv import sr
+from scapy.packet import Raw
+from scapy.sendrecv import sr1
 
 
-def send_icmp_probe(destination: str, ttl: int, timeout: float):
+# Use a stable identifier for this PyTrace process.
+ICMP_ID = os.getpid() & 0xFFFF
+
+
+def send_icmp_probe(
+    destination: str,
+    ttl: int,
+    timeout: float
+):
     """
-    Send an ICMP Echo Request with a specific TTL.
+    Send one ICMP Echo Request with a specific TTL.
 
     Returns:
         (reply, rtt_ms)
@@ -17,13 +27,21 @@ def send_icmp_probe(destination: str, ttl: int, timeout: float):
             dst=destination,
             ttl=ttl
         )
-        / ICMP()
+        /
+        ICMP(
+            id=ICMP_ID,
+            seq=ttl
+        )
+        /
+        Raw(
+            load=b"PyTrace-Unknown-Universe"
+        )
     )
 
     start = time.perf_counter()
 
     try:
-        answered, unanswered = sr(
+        reply = sr1(
             packet,
             timeout=timeout,
             verbose=False,
@@ -36,31 +54,31 @@ def send_icmp_probe(destination: str, ttl: int, timeout: float):
             "Run PyTrace with sufficient privileges."
         ) from exc
 
-    elapsed = (time.perf_counter() - start) * 1000
+    elapsed = (
+        time.perf_counter() - start
+    ) * 1000
 
-    if not answered:
+    if reply is None:
         return None, None
 
-    for sent_packet, received_packet in answered:
+    if not reply.haslayer(ICMP):
+        return None, None
 
-        if not received_packet.haslayer(ICMP):
-            continue
+    icmp = reply.getlayer(ICMP)
 
-        icmp = received_packet.getlayer(ICMP)
+    if icmp is None:
+        return None, None
 
-        if icmp is None:
-            continue
+    # ICMP Time Exceeded
+    if icmp.type == 11:
+        return reply, elapsed
 
-        # ICMP Time Exceeded
-        if icmp.type == 11:
-            return received_packet, elapsed
+    # ICMP Echo Reply
+    if icmp.type == 0:
+        return reply, elapsed
 
-        # ICMP Echo Reply
-        if icmp.type == 0:
-            return received_packet, elapsed
-
-        # ICMP Destination Unreachable
-        if icmp.type == 3:
-            return received_packet, elapsed
+    # ICMP Destination Unreachable
+    if icmp.type == 3:
+        return reply, elapsed
 
     return None, None
