@@ -60,13 +60,13 @@ def trace(
 
     print(BANNER)
 
-    print("=" * 115)
+    print("=" * 125)
     print(f"Target     : {target}")
     print(f"Destination: {destination}")
     print(f"Max hops   : {max_hops}")
     print(f"Timeout    : {timeout}s")
     print(f"Probes/hop : {PROBES_PER_HOP}")
-    print("=" * 115)
+    print("=" * 125)
 
     print()
 
@@ -74,16 +74,17 @@ def trace(
         f"{'HOP':<5}"
         f"{'IP ADDRESS':<20}"
         f"{'HOSTNAME':<42}"
-        f"{'RTT':<15}"
+        f"{'RTT':<32}"
         f"RESPONSE"
     )
 
-    print("-" * 115)
+    print("-" * 125)
 
     for ttl in range(1, max_hops + 1):
 
         responses = []
 
+        # Send 3 probes for this TTL
         for _ in range(PROBES_PER_HOP):
 
             try:
@@ -99,60 +100,77 @@ def trace(
 
             if reply is None:
                 responses.append(
-                    (None, None, "NO_RESPONSE")
+                    {
+                        "ip": None,
+                        "hostname": None,
+                        "rtt": None,
+                        "response": "NO_RESPONSE"
+                    }
                 )
+
                 continue
 
             hop_ip = reply.src
             hostname = reverse_dns(hop_ip)
+            response_type = get_response_type(reply)
 
             responses.append(
-                (
-                    hop_ip,
-                    hostname,
-                    rtt,
-                    response
-                )
+                {
+                    "ip": hop_ip,
+                    "hostname": hostname,
+                    "rtt": rtt,
+                    "response": response
+                }
             )
 
-        valid_responses = [
+        # Keep only successful responses
+        valid = [
             result
             for result in responses
-            if result[0] is not None
+            if result["ip"] is not None
         ]
 
-        if not valid_responses:
+        # No response from this TTL
+        if not valid:
 
             print(
                 f"{ttl:<5}"
                 f"{'*':<20}"
                 f"{'-':<42}"
-                f"{'timeout':<15}"
+                f"{'timeout':<32}"
                 f"NO_RESPONSE"
             )
 
             continue
 
-        # Group responses by IP.
-        hop_ips = {}
+        # Group responses by router IP
+        routers = {}
 
-        for hop_ip, hostname, rtt, response in valid_responses:
+        for result in valid:
 
-            if hop_ip not in hop_ips:
-                hop_ips[hop_ip] = {
-                    "hostname": hostname,
+            ip = result["ip"]
+
+            if ip not in routers:
+
+                routers[ip] = {
+                    "hostname": result["hostname"],
                     "rtts": [],
                     "responses": []
                 }
 
-            hop_ips[hop_ip]["rtts"].append(rtt)
-            hop_ips[hop_ip]["responses"].append(response)
+            routers[ip]["rtts"].append(
+                result["rtt"]
+            )
 
-        first_ip = True
+            routers[ip]["responses"].append(
+                result["response"]
+            )
 
         destination_reached = False
 
-        for hop_ip, data in hop_ips.items():
+        first_router = True
+
+        for ip, data in routers.items():
 
             hostname = data["hostname"]
 
@@ -165,31 +183,29 @@ def trace(
                 data["responses"]
             )
 
-            if first_ip:
-                hop_text = str(ttl)
-                first_ip = False
-            else:
-                hop_text = ""
+            hop_number = str(ttl) if first_router else ""
 
             print(
-                f"{hop_text:<5}"
-                f"{hop_ip:<20}"
+                f"{hop_number:<5}"
+                f"{ip:<20}"
                 f"{hostname:<42}"
-                f"{rtt_text:<15}"
+                f"{rtt_text:<32}"
                 f"{response_text}"
             )
 
-            if hop_ip == destination:
+            first_router = False
+
+            if ip == destination:
                 destination_reached = True
 
         print()
 
         if destination_reached:
 
-            print("-" * 115)
+            print("-" * 125)
             print("Destination reached.")
 
             return
 
-    print("-" * 115)
+    print("-" * 125)
     print("Maximum hop limit reached.")
